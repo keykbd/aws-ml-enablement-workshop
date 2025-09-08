@@ -280,11 +280,11 @@ Resources:
             ResponsePagePath: /index.html
             ErrorCachingMinTTL: 300
         PriceClass: PriceClass_100
-        Tags:
-          - Key: Environment
-            Value: !Ref Environment
-          - Key: Project
-            Value: MLEWTracker
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: MLEWTracker
 
   SDKDistribution:
     Type: AWS::CloudFront::Distribution
