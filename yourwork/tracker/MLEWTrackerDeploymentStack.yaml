@@ -200,6 +200,9 @@ Resources:
                 - pwd
                 - echo "Directory contents:"
                 - ls -la
+                - echo "Installing dependencies in tracker directory..."
+                - cd aws-ml-enablement-workshop/yourwork/tracker && npm ci
+                - cd ${CODEBUILD_SRC_DIR}
                 - echo "Verifying tracker directory structure..."
                 - ls -la aws-ml-enablement-workshop/yourwork/tracker/
                 - echo "Verifying Lambda function directories..."
