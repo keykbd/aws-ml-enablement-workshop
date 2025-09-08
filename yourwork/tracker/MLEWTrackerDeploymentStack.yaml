@@ -156,7 +156,7 @@ Resources:
       Environment:
         Type: ARM_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
-        Image: aws/codebuild/amazonlinux2-aarch64-standard:3.0
+        Image: aws/codebuild/amazonlinux-aarch64-standard:3.0
         PrivilegedMode: false
         EnvironmentVariables:
           - Name: Environment
@@ -193,13 +193,9 @@ Resources:
                 - echo "Cloning repository from GitHub..."
                 - git clone -b add-tracker https://github.com/keykbd/aws-ml-enablement-workshop.git
                 - echo "Repository cloned successfully"
-                
             pre_build:
               commands:
-                - echo "Current directory:"
-                - pwd
-                - echo "Directory contents:"
-                - ls -la
+                - echo "Current directory is $(pwd)"
                 - echo "Installing dependencies in tracker directory..."
                 - cd aws-ml-enablement-workshop/yourwork/tracker && npm ci
                 - cd ${CODEBUILD_SRC_DIR}
@@ -207,26 +203,19 @@ Resources:
                 - ls -la aws-ml-enablement-workshop/yourwork/tracker/
                 - echo "Verifying Lambda function directories..."
                 - ls -la aws-ml-enablement-workshop/yourwork/tracker/packages/cdk/lambda/ || echo "Lambda directories not found"
-                
             build:
               commands:
                 - echo "Starting build phase..."
                 - export TRACKER_DIR="${CODEBUILD_SRC_DIR}/aws-ml-enablement-workshop/yourwork/tracker"
-                - echo "Tracker directory: $TRACKER_DIR"
-                
-                # Build and upload Lambda packages
+                - echo "Tracker directory is $TRACKER_DIR"
+                - cd $TRACKER_DIR
                 - |
                   echo "Building Lambda functions..."
-                  cd $TRACKER_DIR
-                  
                   for func in event-ingestion query stream-aggregation; do
                     echo "Building Lambda function: $func"
                     LAMBDA_DIR="packages/cdk/lambda/$func"
-                    
                     if [ -d "$LAMBDA_DIR" ]; then
                       cd $LAMBDA_DIR
-                      
-                      # Check if package.json exists, if not create a basic one
                       if [ ! -f "package.json" ]; then
                         echo "Creating package.json for $func"
                         case $func in
@@ -241,8 +230,6 @@ Resources:
                             ;;
                         esac
                       fi
-                      
-                      # Check if index.js or index.ts exists
                       if [ -f "src/index.ts" ]; then
                         echo "Found TypeScript source, installing TypeScript and compiling..."
                         npm install --save-dev typescript @types/node @types/aws-lambda
@@ -255,31 +242,33 @@ Resources:
                         cd $TRACKER_DIR
                         continue
                       fi
-                      
-                      # Install dependencies
                       echo "Installing dependencies for $func..."
                       npm install --production
-                      
-                      # Create zip file
                       echo "Creating zip file for $func..."
                       zip -r $func.zip .
-                      
-                      # Upload to S3
                       echo "Uploading $func.zip to S3..."
                       aws s3 cp $func.zip s3://${LAMBDA_CODE_BUCKET}/lambda-packages/$func.zip
-                      
-                      # Go back to tracker directory
                       cd $TRACKER_DIR
                     else
                       echo "WARNING: Lambda function directory $LAMBDA_DIR not found"
                     fi
                   done
-                
-                # Deploy CloudFormation stack
+                - |
+                  echo "Building Dashboard application..."
+                  cd $TRACKER_DIR/packages/dashboard
+                  if [ -f "package.json" ]; then
+                    echo "Installing dashboard dependencies..."
+                    npm install
+                    echo "Building dashboard for production..."
+                    npm run build
+                    echo "Dashboard build completed, waiting for stack to deploy first..."
+                  else
+                    echo "Warning: Dashboard package.json not found"
+                  fi
+                  cd $TRACKER_DIR
                 - |
                   echo "Deploying CloudFormation stack..."
                   cd $TRACKER_DIR
-                  
                   if [ -f "MLEWTrackerStack.yaml" ]; then
                     echo "Found MLEWTrackerStack.yaml, deploying..."
                     aws cloudformation deploy \
@@ -304,45 +293,49 @@ Resources:
                     ls -la
                     exit 1
                   fi
-                  
             post_build:
               commands:
                 - |
                   echo "Post-build phase started..."
                   STACK_NAME="MLEWTrackerStack-${Environment}"
-                  
-                  # Wait for stack to complete
                   echo "Waiting for stack deployment to complete..."
-                  aws cloudformation wait stack-create-complete --stack-name $STACK_NAME 2>/dev/null || \
-                  aws cloudformation wait stack-update-complete --stack-name $STACK_NAME 2>/dev/null || true
-                  
-                  # Get outputs
+                  aws cloudformation wait stack-create-complete --stack-name $STACK_NAME 2>/dev/null || aws cloudformation wait stack-update-complete --stack-name $STACK_NAME 2>/dev/null || true
                   echo "Getting stack outputs..."
                   API_ENDPOINT=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue" --output text 2>/dev/null || echo "N/A")
                   API_KEY_ID=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='ApiKeyId'].OutputValue" --output text 2>/dev/null || echo "N/A")
                   DASHBOARD_URL=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='DashboardURL'].OutputValue" --output text 2>/dev/null || echo "N/A")
-                  
-                  # Get API Key value
                   if [ "$API_KEY_ID" != "N/A" ] && [ ! -z "$API_KEY_ID" ]; then
                     echo "Getting API Key value..."
                     API_KEY_VALUE=$(aws apigateway get-api-key --api-key $API_KEY_ID --include-value --query 'value' --output text 2>/dev/null || echo "N/A")
                   else
                     API_KEY_VALUE="N/A"
                   fi
-                  
-                  cat << EOF > deployment-info.txt
+                  echo "Uploading Dashboard to S3..."
+                  DASHBOARD_BUCKET=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='DashboardBucketName'].OutputValue" --output text 2>/dev/null || echo "")
+                  if [ ! -z "$DASHBOARD_BUCKET" ] && [ -d "$TRACKER_DIR/packages/dashboard/dist" ]; then
+                    aws s3 sync $TRACKER_DIR/packages/dashboard/dist/ s3://$DASHBOARD_BUCKET/ --delete
+                    echo "Dashboard uploaded successfully to $DASHBOARD_BUCKET"
+                    DASHBOARD_DISTRIBUTION_ID=$(aws cloudformation describe-stack-resources --stack-name $STACK_NAME --query "StackResources[?ResourceType=='AWS::CloudFront::Distribution' && LogicalResourceId=='DashboardDistribution'].PhysicalResourceId" --output text 2>/dev/null || echo "")
+                    if [ ! -z "$DASHBOARD_DISTRIBUTION_ID" ]; then
+                      echo "Creating CloudFront invalidation..."
+                      aws cloudfront create-invalidation --distribution-id $DASHBOARD_DISTRIBUTION_ID --paths "/*"
+                    fi
+                  else
+                    echo "Warning: Dashboard bucket or dist folder not found"
+                  fi
+                  cat > deployment-info.txt << 'EOFMSG'
                   MLEW Tracker Deployment Completed Successfully!
                   ================================================
                   Deployment Time: $(date '+%Y-%m-%d %H:%M:%S')
                   
-                  🚀 Access Information:
+                  Access Information:
                   ----------------------
                   API Endpoint: ${API_ENDPOINT}
                   API Key ID: ${API_KEY_ID}
                   API Key Value: ${API_KEY_VALUE}
                   Dashboard URL: https://${DASHBOARD_URL}
                   
-                  📋 Configuration:
+                  Configuration:
                   -----------------
                   Environment: ${Environment}
                   Event TTL Days: ${EventTtlDays}
@@ -351,12 +344,12 @@ Resources:
                   Error Alarm Threshold: ${ErrorAlarmThreshold}
                   Duration Alarm Threshold: ${DurationAlarmThreshold}
                   
-                  🔧 Stack Details:
+                  Stack Details:
                   -----------------
                   Stack Name: ${STACK_NAME}
                   Region: ${AWS_DEFAULT_REGION}
                   
-                  📝 Next Steps:
+                  Next Steps:
                   --------------
                   1. Save the API Key Value shown above - you'll need it to access the API
                   2. Access the Dashboard URL to view analytics
@@ -367,11 +360,9 @@ Resources:
                   
                   For CloudFormation Stack:
                   https://console.aws.amazon.com/cloudformation/home?region=${AWS_DEFAULT_REGION}#/stacks/stackinfo?stackId=${STACK_NAME}
-                  EOF
-                  
+                  EOFMSG
                   echo "Sending completion notification..."
                   aws sns publish --topic-arn "${SNSTopicArn}" --subject "MLEW Tracker Deployment Complete" --message file://deployment-info.txt
-                  
                   echo "Deployment completed successfully!"
           artifacts:
             files:
