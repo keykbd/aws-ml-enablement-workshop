@@ -311,11 +311,11 @@ Resources:
               Forward: none
           Compress: true
         PriceClass: PriceClass_100
-        Tags:
-          - Key: Environment
-            Value: !Ref Environment
-          - Key: Project
-            Value: MLEWTracker
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: MLEWTracker
 
   # =====================================
   # Lambda Functions
