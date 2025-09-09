@@ -331,18 +331,8 @@ Resources:
                   Access Information:
                   ----------------------
                   API Endpoint: ${API_ENDPOINT}
-                  API Key ID: ${API_KEY_ID}
-                  API Key Value: ${API_KEY_VALUE}
+                  API Key: ${API_KEY_VALUE}
                   Dashboard URL: https://${DASHBOARD_URL}
-                  
-                  Configuration:
-                  -----------------
-                  Environment: ${Environment}
-                  Event TTL Days: ${EventTtlDays}
-                  API Throttle Burst Limit: ${ApiThrottleBurstLimit}
-                  API Throttle Rate Limit: ${ApiThrottleRateLimit}
-                  Error Alarm Threshold: ${ErrorAlarmThreshold}
-                  Duration Alarm Threshold: ${DurationAlarmThreshold}
                   
                   Stack Details:
                   -----------------
@@ -351,7 +341,7 @@ Resources:
                   
                   Next Steps:
                   --------------
-                  1. Save the API Key Value shown above - you'll need it to access the API
+                  1. Save the API Key shown above - you'll need it to access the API
                   2. Access the Dashboard URL to view analytics
                   3. Configure your applications to send events to the API Endpoint using the API Key
                   

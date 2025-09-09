@@ -3,7 +3,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, BatchWriteCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { CloudWatchClient, PutMetricDataCommand, StandardUnit } from '@aws-sdk/client-cloudwatch';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
-import { nanoid } from 'nanoid';
+import { randomUUID } from 'crypto';
 
 // Initialize AWS clients
 const dynamoClient = new DynamoDBClient({});
@@ -82,9 +82,9 @@ export const handler = async (
     // Process events
     const processedEvents = batch.events.map(event => ({
       ...event,
-      eventId: event.eventId || nanoid(),
+      eventId: event.eventId || randomUUID(),
       applicationId: batch.applicationId,
-      timestampEventId: `${event.timestamp}#${event.eventId || nanoid()}`,
+      timestampEventId: `${event.timestamp}#${event.eventId || randomUUID()}`,
       date: new Date(event.timestamp).toISOString().split('T')[0],
       ttl: Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60) // 30 days TTL
     }));
