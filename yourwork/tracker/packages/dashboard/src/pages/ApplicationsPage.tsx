@@ -33,7 +33,7 @@ export const ApplicationsPage = () => {
         <div className="text-center py-8">
           <p className="text-red-800 font-medium">アプリケーションの読み込みに失敗しました</p>
           <p className="text-red-600 text-sm mt-2">
-            APIサーバーがポート3001で実行されていることを確認してください
+            APIサーバーへの接続を確認してください
           </p>
         </div>
       </div>
@@ -52,20 +52,32 @@ export const ApplicationsPage = () => {
       </div>
 
       {applications.length === 0 ? (
-        <div className="card text-center py-12">
-          <div className="text-6xl mb-4">📱</div>
-          <h3 className="text-lg font-medium text-gray-900 mb-2">
-            アプリケーションが見つかりません
+        <div className="card text-center py-12 bg-gray-50">
+          <div className="text-6xl mb-4">📊</div>
+          <h3 className="text-xl font-medium text-gray-900 mb-2">
+            まだデータがありません
           </h3>
           <p className="text-gray-600 mb-6">
-            アプリケーションからイベントの送信を開始すると、ここに表示されます。
+            トラッキングSDKを使用してイベントを送信すると、<br />
+            アプリケーションがここに表示されます。
           </p>
-          <div className="bg-gray-50 rounded-lg p-4 text-left max-w-lg mx-auto">
-            <p className="text-sm text-gray-700 font-medium mb-2">クイックスタート:</p>
-            <code className="text-xs text-gray-600 block">
-              npm install @mleww3/tracker<br/>
-              tracker.trackClick('button-name')
-            </code>
+          <div className="bg-white border border-gray-200 rounded-lg p-6 text-left max-w-2xl mx-auto">
+            <p className="text-sm text-gray-700 font-semibold mb-3">🚀 クイックスタート</p>
+            <div className="space-y-4">
+              <div>
+                <p className="text-xs text-gray-500 mb-1">1. SDKをインストール</p>
+                <code className="text-xs bg-gray-100 p-2 rounded block">
+                  npm install @mleww3/tracker
+                </code>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500 mb-1">2. イベントを送信</p>
+                <code className="text-xs bg-gray-100 p-2 rounded block">
+                  const tracker = new Tracker({'{'}applicationId: 'your-app'{'}'})<br/>
+                  tracker.trackClick('button-name')
+                </code>
+              </div>
+            </div>
           </div>
         </div>
       ) : (

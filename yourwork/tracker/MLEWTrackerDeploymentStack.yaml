@@ -323,7 +323,7 @@ Resources:
                   else
                     echo "Warning: Dashboard bucket or dist folder not found"
                   fi
-                  cat > deployment-info.txt << 'EOFMSG'
+                  cat > deployment-info.txt << EOFMSG
                   MLEW Tracker Deployment Completed Successfully!
                   ================================================
                   Deployment Time: $(date '+%Y-%m-%d %H:%M:%S')
