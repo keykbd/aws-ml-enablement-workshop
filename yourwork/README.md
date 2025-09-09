@@ -218,32 +218,37 @@ cd /your/working/directory/aws-ml-enablement-workshop/yourwork
 #### 2. Tracker システムのデプロイ（オプション）
 
 > [!NOTE]
-> この手順はオプションです
+> この手順はオプションです。構築したモックアプリケーションの View 数や Click 数などのメトリクスを計測したい場合はデプロイしてください。
 
 ワークショップで使用するモックアプリケーションの分析トラッカーシステムをデプロイします。このシステムはユーザーの操作を記録し、ダッシュボードで可視化します。
 
 ```bash
-# Tracker ディレクトリに移動
-cd /your/working/directory/aws-ml-enablement-workshop/yourwork/tracker
-
-# 依存関係をインストール
-npm install
-
-# AWS 環境に Tracker をデプロイ
-npm run deploy:with-config
-
-# 元の yourwork ディレクトリに戻る
-cd ..
+# AWS CLI を使用して CloudFormation スタックをデプロイ
+# {任意のメールアドレス} を実際のメールアドレスに置き換えてください
+# デプロイ先のリージョンはデフォルトでは東京リージョン（ap-northeast-1）になっています
+aws cloudformation deploy \
+  --template-file ./tracker/MLEWTrackerDeploymentStack.yaml \
+  --stack-name mlew-tracker-stack \
+  --parameter-overrides \
+    NotificationEmailAddress={任意のメールアドレス} \
+    Environment=dev \
+  --capabilities CAPABILITY_IAM \
+  --region ap-northeast-1
 ```
 
-デプロイが完了すると、以下の情報が出力されます。
-これらの情報は `4. カスタムエージェントの実行` で利用するため控えておいてください。
+デプロイ実行後、指定したメールアドレスに「**MLEW Tracker Deployment Notifications <no-reply@sns.amazonaws.com>**」からメールが届きます。メール本文の「**Confirm subscription**」リンクをクリックして、SNS通知の購読を確認してください。
+
+10～15分ほど待つと、デプロイ完了通知メールが再度届きます。メールには以下のような情報が記載されているので、控えておいてください。
 
 ```
-- **API Endpoint**: APIゲートウェイのURL
-- **API Key**: API認証用のキー
-- **Dashboard URL**: ダッシュボードのCloudFront URL
+Access Information:
+----------------------
+API Endpoint: https://xxxxxxxxxx.execute-api.us-west-2.amazonaws.com/dev
+API Key: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+Dashboard URL: https://dxxxxxxxxxx.cloudfront.net
 ```
+
+これらの情報は `4. カスタムエージェントの実行` で利用します。
 
 #### 3. Amazon Q Developer CLI の起動
 
