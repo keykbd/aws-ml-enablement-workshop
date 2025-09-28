@@ -7,10 +7,11 @@ ML Enablement Workshop で作成したモックアプリケーションの反応
 - **tracker-sdk**: Webサイトに埋め込むJavaScript SDK
 - **dashboard**: アナリティクスダッシュボード（React）
 - **lambdas**: Lambda 関数のソースコード（ワークスペース単位で管理）
+- **cdk-app**: AWS CDK によるインフラ定義（バックエンド・配信基盤）
 
 ## 🚀 デプロイ方法
 
-MLEW Tracker は CloudFormation テンプレート `MLEWTrackerDeploymentStack.yaml` を用いたワンクリックデプロイに統一されています。スタックを作成すると、付属の CodeBuild プロジェクトがリポジトリをクローンし、Lambda・ダッシュボード・SDK のビルドと本番配置まで自動で実行します。
+MLEW Tracker は CloudFormation テンプレート `MLEWTrackerDeploymentStack.yaml` を用いたワンクリックデプロイに統一されています。スタックを作成すると、付属の CodeBuild プロジェクトがリポジトリをクローンし、Lambda・ダッシュボード・SDK をビルドしたのち AWS CDK (`cdk-app`) でインフラをデプロイします。
 
 ```bash
 # CloudFormation テンプレートによるデプロイ
@@ -22,10 +23,9 @@ aws cloudformation deploy \
 ```
 
 パイプラインで行われる主な処理:
-- `npm ci` と `npm run package:lambdas` で Lambda 関数をビルドし、S3 へアップロード
-- `npm run build --workspace=packages/dashboard` で React ダッシュボードをビルドし、CloudFront + S3 へ配置
-- `npm run build --workspace=packages/tracker-sdk` でブラウザ SDK をビルドし、専用 CloudFront + S3 へ配置
-- `aws cloudformation deploy --template-file MLEWTrackerStack.yaml` で API Gateway / DynamoDB / CloudFront 構成を同期
+- ルートで `npm ci` を実行して依存関係を整備
+- `npm run build --workspace=packages/dashboard` と `npm run build --workspace=packages/tracker-sdk` で静的アセットをビルド
+- `npm ci --prefix cdk-app` で CDK 依存関係をインストールし、`npx cdk deploy` によりバックエンド/配信基盤をデプロイ（Lambda は CDK の NodejsFunction でバンドル、ダッシュボードと SDK は `BucketDeployment` で配置）
 
 デプロイ完了後、SNS 通知メールおよび CodeBuild の `deployment-info.txt` から以下を確認できます。
 - **API Endpoint**: API ゲートウェイの URL

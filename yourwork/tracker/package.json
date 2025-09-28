@@ -16,7 +16,7 @@
     "build:dashboard": "npm run build --workspace=packages/dashboard",
     "test": "npm run test --workspaces",
     "clean": "npm run clean --workspaces",
-    "package:lambdas": "node ./scripts/package-lambdas.mjs"
+    "cdk": "npm --prefix cdk-app run cdk"
   },
   "devDependencies": {
     "@types/node": "^20.6.0",

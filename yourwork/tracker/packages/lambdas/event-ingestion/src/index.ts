@@ -16,6 +16,7 @@ const EVENTS_TABLE = process.env.EVENTS_TABLE!;
 const APPLICATIONS_TABLE = process.env.APPLICATIONS_TABLE!;
 const ARCHIVE_BUCKET = process.env.ARCHIVE_BUCKET!;
 const ENVIRONMENT = process.env.ENVIRONMENT || 'dev';
+const EVENT_TTL_DAYS = Number(process.env.EVENT_TTL_DAYS ?? '30');
 
 interface AnalyticsEvent {
   eventId: string;
@@ -86,7 +87,7 @@ export const handler = async (
       applicationId: batch.applicationId,
       timestampEventId: `${event.timestamp}#${event.eventId || randomUUID()}`,
       date: new Date(event.timestamp).toISOString().split('T')[0],
-      ttl: Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60) // 30 days TTL
+      ttl: Math.floor(Date.now() / 1000) + EVENT_TTL_DAYS * 24 * 60 * 60
     }));
 
     // Batch write to DynamoDB (max 25 items per batch)

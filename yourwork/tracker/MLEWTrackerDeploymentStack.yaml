@@ -77,23 +77,6 @@ Resources:
       TopicArn: !Ref DeploymentNotificationTopic
       Endpoint: !Ref NotificationEmailAddress
 
-  # S3 Bucket for Lambda code
-  LambdaCodeBucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketName: !Sub 'mlew-tracker-lambda-code-${AWS::AccountId}-${AWS::Region}'
-      VersioningConfiguration:
-        Status: Enabled
-      BucketEncryption:
-        ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              SSEAlgorithm: AES256
-      PublicAccessBlockConfiguration:
-        BlockPublicAcls: true
-        BlockPublicPolicy: true
-        IgnorePublicAcls: true
-        RestrictPublicBuckets: true
-
   # IAM Role for CodeBuild
   CodeBuildServiceRole:
     Type: AWS::IAM::Role
@@ -128,16 +111,6 @@ Resources:
               - sns:Publish
             Effect: Allow
             Resource: !Ref DeploymentNotificationTopic
-          - Action:
-              - s3:GetObject
-              - s3:PutObject
-              - s3:PutObjectAcl
-            Effect: Allow
-            Resource: !Sub '${LambdaCodeBucket.Arn}/*'
-          - Action:
-              - s3:ListBucket
-            Effect: Allow
-            Resource: !GetAtt LambdaCodeBucket.Arn
       Roles:
         - !Ref CodeBuildServiceRole
 
@@ -175,8 +148,6 @@ Resources:
             Value: !Ref DeploymentNotificationTopic
           - Name: DEPLOYMENT_STACK_NAME
             Value: !Ref AWS::StackName
-          - Name: LAMBDA_CODE_BUCKET
-            Value: !Ref LambdaCodeBucket
           - Name: NOTIFICATION_EMAIL
             Value: !Ref NotificationEmailAddress
       Source:
@@ -209,47 +180,31 @@ Resources:
                 - export TRACKER_DIR="${CODEBUILD_SRC_DIR}/aws-ml-enablement-workshop/yourwork/tracker"
                 - echo "Tracker directory is $TRACKER_DIR"
                 - cd $TRACKER_DIR
-                - echo "Packaging Lambda functions via workspace script..."
-                - npm run package:lambdas
                 - echo "Building dashboard package..."
                 - npm run build --workspace=packages/dashboard
                 - echo "Building tracker SDK package..."
                 - npm run build --workspace=packages/tracker-sdk
+                - echo "Installing CDK dependencies..."
+                - cd $TRACKER_DIR/cdk-app && npm ci --no-audit --no-fund
+                - cd $TRACKER_DIR/cdk-app
                 - |
-                  echo "Deploying CloudFormation stack..."
-                  cd $TRACKER_DIR
-                  if [ -f "MLEWTrackerStack.yaml" ]; then
-                    echo "Found MLEWTrackerStack.yaml, deploying..."
-                    aws cloudformation deploy \
-                      --template-file MLEWTrackerStack.yaml \
-                      --stack-name MLEWTrackerStack-${Environment} \
-                      --parameter-overrides \
-                        Environment=${Environment} \
-                        EventTtlDays=${EventTtlDays} \
-                        ApiThrottleBurstLimit=${ApiThrottleBurstLimit} \
-                        ApiThrottleRateLimit=${ApiThrottleRateLimit} \
-                        ErrorAlarmThreshold=${ErrorAlarmThreshold} \
-                        DurationAlarmThreshold=${DurationAlarmThreshold} \
-                        LambdaCodeBucket=${LAMBDA_CODE_BUCKET} \
-                        NotificationEmail=${NOTIFICATION_EMAIL} \
-                      --capabilities CAPABILITY_IAM \
-                      --no-fail-on-empty-changeset
-                  else
-                    echo "ERROR: MLEWTrackerStack.yaml not found in the repository"
-                    echo "Current directory:"
-                    pwd
-                    echo "Directory contents:"
-                    ls -la
-                    exit 1
-                  fi
+                  echo "Synthesizing and deploying CDK stack..."
+                  npx cdk deploy \
+                    --require-approval never \
+                    --context environment=${Environment} \
+                    --context eventTtlDays=${EventTtlDays} \
+                    --context apiThrottleBurstLimit=${ApiThrottleBurstLimit} \
+                    --context apiThrottleRateLimit=${ApiThrottleRateLimit} \
+                    --context errorAlarmThreshold=${ErrorAlarmThreshold} \
+                    --context durationAlarmThreshold=${DurationAlarmThreshold} \
+                    --context notificationEmail=${NOTIFICATION_EMAIL}
+                - cd $TRACKER_DIR
             post_build:
               commands:
                 - |
                   echo "Post-build phase started..."
                   STACK_NAME="MLEWTrackerStack-${Environment}"
-                  echo "Waiting for stack deployment to complete..."
-                  aws cloudformation wait stack-create-complete --stack-name $STACK_NAME 2>/dev/null || aws cloudformation wait stack-update-complete --stack-name $STACK_NAME 2>/dev/null || true
-                  echo "Getting stack outputs..."
+                  echo "Collecting stack outputs..."
                   API_ENDPOINT=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue" --output text 2>/dev/null || echo "N/A")
                   API_KEY_ID=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='ApiKeyId'].OutputValue" --output text 2>/dev/null || echo "N/A")
                   DASHBOARD_URL=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='DashboardURL'].OutputValue" --output text 2>/dev/null || echo "N/A")
@@ -259,32 +214,6 @@ Resources:
                     API_KEY_VALUE=$(aws apigateway get-api-key --api-key $API_KEY_ID --include-value --query 'value' --output text 2>/dev/null || echo "N/A")
                   else
                     API_KEY_VALUE="N/A"
-                  fi
-                  echo "Uploading Dashboard to S3..."
-                  DASHBOARD_BUCKET=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='DashboardBucketName'].OutputValue" --output text 2>/dev/null || echo "")
-                  if [ ! -z "$DASHBOARD_BUCKET" ] && [ -d "$TRACKER_DIR/packages/dashboard/dist" ]; then
-                    aws s3 sync $TRACKER_DIR/packages/dashboard/dist/ s3://$DASHBOARD_BUCKET/ --delete
-                    echo "Dashboard uploaded successfully to $DASHBOARD_BUCKET"
-                    DASHBOARD_DISTRIBUTION_ID=$(aws cloudformation describe-stack-resources --stack-name $STACK_NAME --query "StackResources[?ResourceType=='AWS::CloudFront::Distribution' && LogicalResourceId=='DashboardDistribution'].PhysicalResourceId" --output text 2>/dev/null || echo "")
-                    if [ ! -z "$DASHBOARD_DISTRIBUTION_ID" ]; then
-                      echo "Creating CloudFront invalidation..."
-                      aws cloudfront create-invalidation --distribution-id $DASHBOARD_DISTRIBUTION_ID --paths "/*"
-                    fi
-                  else
-                    echo "Warning: Dashboard bucket or dist folder not found"
-                  fi
-                  echo "Uploading Tracker SDK to S3..."
-                  SDK_BUCKET=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='SdkBucketName'].OutputValue" --output text 2>/dev/null || echo "")
-                  if [ ! -z "$SDK_BUCKET" ] && [ -d "$TRACKER_DIR/packages/tracker-sdk/dist" ]; then
-                    aws s3 sync $TRACKER_DIR/packages/tracker-sdk/dist/ s3://$SDK_BUCKET/ --delete
-                    echo "Tracker SDK uploaded successfully to $SDK_BUCKET"
-                    SDK_DISTRIBUTION_ID=$(aws cloudformation describe-stack-resources --stack-name $STACK_NAME --query "StackResources[?ResourceType=='AWS::CloudFront::Distribution' && LogicalResourceId=='SDKDistribution'].PhysicalResourceId" --output text 2>/dev/null || echo "")
-                    if [ ! -z "$SDK_DISTRIBUTION_ID" ]; then
-                      echo "Creating CloudFront invalidation for SDK..."
-                      aws cloudfront create-invalidation --distribution-id $SDK_DISTRIBUTION_ID --paths "/*"
-                    fi
-                  else
-                    echo "Warning: SDK bucket or dist folder not found"
                   fi
                   if [ "$SDK_URL" != "N/A" ] && [ ! -z "$SDK_URL" ]; then
                     FORMATTED_SDK_URL="https://${SDK_URL}"
@@ -399,10 +328,6 @@ Resources:
                 Resource: !GetAtt MLEWTrackerDeploymentProject.Arn
 
 Outputs:
-  LambdaCodeBucketName:
-    Description: S3 bucket for Lambda code
-    Value: !Ref LambdaCodeBucket
-  
   NotificationTopicArn:
     Description: ARN of the SNS topic for deployment notifications
     Value: !Ref DeploymentNotificationTopic
