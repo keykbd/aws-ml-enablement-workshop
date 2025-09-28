@@ -210,6 +210,17 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: ['*']
+            AllowedMethods: [GET]
+            AllowedHeaders: ['*']
+            MaxAge: 3600
       Tags:
         - Key: Environment
           Value: !Ref Environment
@@ -217,6 +228,18 @@ Resources:
           Value: MLEWTracker
         - Key: Component
           Value: Storage
+
+  SDKBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SDKBucket
+      PolicyDocument:
+        Statement:
+          - Sid: PublicReadForSdkObjects
+            Effect: Allow
+            Principal: '*'
+            Action: 's3:GetObject'
+            Resource: !Sub '${SDKBucket.Arn}/*'
 
   ArchiveBucket:
     Type: AWS::S3::Bucket
@@ -380,7 +403,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub 'mleww3-event-ingestion-${Environment}'
-      Runtime: nodejs18.x
+      Runtime: nodejs20.x
       Handler: index.handler
       Code:
         S3Bucket: !Ref LambdaCodeBucket
@@ -404,7 +427,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub 'mleww3-query-${Environment}'
-      Runtime: nodejs18.x
+      Runtime: nodejs20.x
       Handler: index.handler
       Code:
         S3Bucket: !Ref LambdaCodeBucket
@@ -428,7 +451,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub 'mleww3-stream-aggregation-${Environment}'
-      Runtime: nodejs18.x
+      Runtime: nodejs20.x
       Handler: index.handler
       Code:
         S3Bucket: !Ref LambdaCodeBucket
@@ -792,6 +815,18 @@ Outputs:
     Value: !Ref DashboardBucket
     Export:
       Name: !Sub '${AWS::StackName}-DashboardBucket'
+  
+  SdkBucketName:
+    Description: Tracker SDK S3 Bucket Name
+    Value: !Ref SDKBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-SdkBucket'
+  
+  SdkDistributionDomain:
+    Description: Tracker SDK CloudFront URL
+    Value: !GetAtt SDKDistribution.DomainName
+    Export:
+      Name: !Sub '${AWS::StackName}-SdkDistributionDomain'
   
   EventsTableName:
     Description: Events DynamoDB Table Name

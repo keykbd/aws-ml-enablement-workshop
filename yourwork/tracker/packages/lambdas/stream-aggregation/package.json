@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "build": "tsc",
-    "package": "npm run build && zip -r function.zip ."
+    "clean": "rm -rf node_modules *.zip index.js dist"
   },
   "dependencies": {
     "@aws-sdk/client-cloudwatch": "^3.864.0",

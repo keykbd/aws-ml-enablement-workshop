@@ -199,73 +199,22 @@ Resources:
                 - echo "Installing dependencies in tracker directory..."
                 - cd aws-ml-enablement-workshop/yourwork/tracker && npm ci
                 - cd ${CODEBUILD_SRC_DIR}
-                - echo "Verifying tracker directory structure..."
+                - echo "Verifying tracker workspace contents..."
                 - ls -la aws-ml-enablement-workshop/yourwork/tracker/
-                - echo "Verifying Lambda function directories..."
-                - ls -la aws-ml-enablement-workshop/yourwork/tracker/packages/cdk/lambda/ || echo "Lambda directories not found"
+                - echo "Available Lambda workspaces:"
+                - ls -la aws-ml-enablement-workshop/yourwork/tracker/packages/lambdas/ || echo "Lambda directories not found"
             build:
               commands:
                 - echo "Starting build phase..."
                 - export TRACKER_DIR="${CODEBUILD_SRC_DIR}/aws-ml-enablement-workshop/yourwork/tracker"
                 - echo "Tracker directory is $TRACKER_DIR"
                 - cd $TRACKER_DIR
-                - |
-                  echo "Building Lambda functions..."
-                  for func in event-ingestion query stream-aggregation; do
-                    echo "Building Lambda function: $func"
-                    LAMBDA_DIR="packages/cdk/lambda/$func"
-                    if [ -d "$LAMBDA_DIR" ]; then
-                      cd $LAMBDA_DIR
-                      if [ ! -f "package.json" ]; then
-                        echo "Creating package.json for $func"
-                        case $func in
-                          event-ingestion)
-                            echo '{"name":"event-ingestion","version":"1.0.0","main":"index.js","dependencies":{"@aws-sdk/client-dynamodb":"^3.0.0","@aws-sdk/lib-dynamodb":"^3.0.0","@aws-sdk/client-cloudwatch":"^3.0.0","@aws-sdk/client-s3":"^3.0.0","nanoid":"^3.3.0"}}' > package.json
-                            ;;
-                          query)
-                            echo '{"name":"query","version":"1.0.0","main":"index.js","dependencies":{"@aws-sdk/client-dynamodb":"^3.0.0","@aws-sdk/lib-dynamodb":"^3.0.0"}}' > package.json
-                            ;;
-                          stream-aggregation)
-                            echo '{"name":"stream-aggregation","version":"1.0.0","main":"index.js","dependencies":{"@aws-sdk/client-dynamodb":"^3.0.0","@aws-sdk/lib-dynamodb":"^3.0.0"}}' > package.json
-                            ;;
-                        esac
-                      fi
-                      if [ -f "src/index.ts" ]; then
-                        echo "Found TypeScript source, installing TypeScript and compiling..."
-                        npm install --save-dev typescript @types/node @types/aws-lambda
-                        npx tsc src/index.ts --outDir . --module commonjs --target es2020
-                      elif [ -f "src/index.js" ]; then
-                        echo "Found JavaScript source, copying to root..."
-                        cp src/index.js ./index.js
-                      elif [ ! -f "index.js" ]; then
-                        echo "ERROR: No index.js or src/index.ts found for $func"
-                        cd $TRACKER_DIR
-                        continue
-                      fi
-                      echo "Installing dependencies for $func..."
-                      npm install --production
-                      echo "Creating zip file for $func..."
-                      zip -r $func.zip .
-                      echo "Uploading $func.zip to S3..."
-                      aws s3 cp $func.zip s3://${LAMBDA_CODE_BUCKET}/lambda-packages/$func.zip
-                      cd $TRACKER_DIR
-                    else
-                      echo "WARNING: Lambda function directory $LAMBDA_DIR not found"
-                    fi
-                  done
-                - |
-                  echo "Building Dashboard application..."
-                  cd $TRACKER_DIR/packages/dashboard
-                  if [ -f "package.json" ]; then
-                    echo "Installing dashboard dependencies..."
-                    npm install
-                    echo "Building dashboard for production..."
-                    npm run build
-                    echo "Dashboard build completed, waiting for stack to deploy first..."
-                  else
-                    echo "Warning: Dashboard package.json not found"
-                  fi
-                  cd $TRACKER_DIR
+                - echo "Packaging Lambda functions via workspace script..."
+                - npm run package:lambdas
+                - echo "Building dashboard package..."
+                - npm run build --workspace=packages/dashboard
+                - echo "Building tracker SDK package..."
+                - npm run build --workspace=packages/tracker-sdk
                 - |
                   echo "Deploying CloudFormation stack..."
                   cd $TRACKER_DIR
@@ -304,6 +253,7 @@ Resources:
                   API_ENDPOINT=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue" --output text 2>/dev/null || echo "N/A")
                   API_KEY_ID=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='ApiKeyId'].OutputValue" --output text 2>/dev/null || echo "N/A")
                   DASHBOARD_URL=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='DashboardURL'].OutputValue" --output text 2>/dev/null || echo "N/A")
+                  SDK_URL=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='SdkDistributionDomain'].OutputValue" --output text 2>/dev/null || echo "N/A")
                   if [ "$API_KEY_ID" != "N/A" ] && [ ! -z "$API_KEY_ID" ]; then
                     echo "Getting API Key value..."
                     API_KEY_VALUE=$(aws apigateway get-api-key --api-key $API_KEY_ID --include-value --query 'value' --output text 2>/dev/null || echo "N/A")
@@ -323,6 +273,24 @@ Resources:
                   else
                     echo "Warning: Dashboard bucket or dist folder not found"
                   fi
+                  echo "Uploading Tracker SDK to S3..."
+                  SDK_BUCKET=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='SdkBucketName'].OutputValue" --output text 2>/dev/null || echo "")
+                  if [ ! -z "$SDK_BUCKET" ] && [ -d "$TRACKER_DIR/packages/tracker-sdk/dist" ]; then
+                    aws s3 sync $TRACKER_DIR/packages/tracker-sdk/dist/ s3://$SDK_BUCKET/ --delete
+                    echo "Tracker SDK uploaded successfully to $SDK_BUCKET"
+                    SDK_DISTRIBUTION_ID=$(aws cloudformation describe-stack-resources --stack-name $STACK_NAME --query "StackResources[?ResourceType=='AWS::CloudFront::Distribution' && LogicalResourceId=='SDKDistribution'].PhysicalResourceId" --output text 2>/dev/null || echo "")
+                    if [ ! -z "$SDK_DISTRIBUTION_ID" ]; then
+                      echo "Creating CloudFront invalidation for SDK..."
+                      aws cloudfront create-invalidation --distribution-id $SDK_DISTRIBUTION_ID --paths "/*"
+                    fi
+                  else
+                    echo "Warning: SDK bucket or dist folder not found"
+                  fi
+                  if [ "$SDK_URL" != "N/A" ] && [ ! -z "$SDK_URL" ]; then
+                    FORMATTED_SDK_URL="https://${SDK_URL}"
+                  else
+                    FORMATTED_SDK_URL="N/A"
+                  fi
                   cat > deployment-info.txt << EOFMSG
                   MLEW Tracker Deployment Completed Successfully!
                   ================================================
@@ -333,6 +301,7 @@ Resources:
                   API Endpoint: ${API_ENDPOINT}
                   API Key: ${API_KEY_VALUE}
                   Dashboard URL: https://${DASHBOARD_URL}
+                  Tracker SDK URL: ${FORMATTED_SDK_URL}
                   
                   Stack Details:
                   -----------------
