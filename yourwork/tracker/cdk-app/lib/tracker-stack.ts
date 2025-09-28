@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as fs from 'fs';
-import { Duration, RemovalPolicy, Stack, StackProps, Tags, CfnOutput } from 'aws-cdk-lib';
+import { Duration, RemovalPolicy, Stack, StackProps, Tags, CfnOutput, Annotations } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as s3 from 'aws-cdk-lib/aws-s3';
@@ -470,7 +470,9 @@ export class TrackerStack extends Stack {
       });
     } else {
       // Provide a synth-time warning to remind build step.
-      this.node.addWarning('Dashboard dist not found. Run `npm run build --workspace=packages/dashboard` before cdk deploy.');
+      Annotations.of(this).addWarning(
+        'Dashboard dist not found. Run `npm run build --workspace=packages/dashboard` before cdk deploy.'
+      );
     }
 
     const sdkDistPath = path.join(__dirname, '..', '..', 'packages', 'tracker-sdk', 'dist');
@@ -483,7 +485,9 @@ export class TrackerStack extends Stack {
         prune: true,
       });
     } else {
-      this.node.addWarning('Tracker SDK dist not found. Run `npm run build --workspace=packages/tracker-sdk` before cdk deploy.');
+      Annotations.of(this).addWarning(
+        'Tracker SDK dist not found. Run `npm run build --workspace=packages/tracker-sdk` before cdk deploy.'
+      );
     }
 
     // Outputs
