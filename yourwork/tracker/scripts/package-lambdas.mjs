@@ -63,7 +63,6 @@ function buildLambda(dirent) {
 
   runCommand('npm', ['ci', '--no-audit', '--no-fund'], { cwd: lambdaPath, env: process.env });
   runCommand('npm', ['run', 'build'], { cwd: lambdaPath, env: process.env });
-  runCommand('npm', ['prune', '--omit=dev'], { cwd: lambdaPath, env: process.env });
 
   const zipPath = zipLambda(lambdaPath, lambdaName);
   console.log(`Created zip at ${zipPath}`);
