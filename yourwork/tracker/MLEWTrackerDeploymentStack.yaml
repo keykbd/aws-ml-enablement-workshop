@@ -148,8 +148,6 @@ Resources:
             Value: !Ref DeploymentNotificationTopic
           - Name: DEPLOYMENT_STACK_NAME
             Value: !Ref AWS::StackName
-          - Name: NOTIFICATION_EMAIL
-            Value: !Ref NotificationEmailAddress
       Source:
         Type: NO_SOURCE
         BuildSpec: |
@@ -180,10 +178,6 @@ Resources:
                 - export TRACKER_DIR="${CODEBUILD_SRC_DIR}/aws-ml-enablement-workshop/yourwork/tracker"
                 - echo "Tracker directory is $TRACKER_DIR"
                 - cd $TRACKER_DIR
-                - echo "Building dashboard package..."
-                - npm run build --workspace=packages/dashboard
-                - echo "Building tracker SDK package..."
-                - npm run build --workspace=packages/tracker-sdk
                 - echo "Installing CDK dependencies..."
                 - cd $TRACKER_DIR/cdk-app && npm ci --no-audit --no-fund
                 - cd $TRACKER_DIR/cdk-app
@@ -194,58 +188,116 @@ Resources:
                     --context environment=${Environment} \
                     --context eventTtlDays=${EventTtlDays} \
                     --context apiThrottleBurstLimit=${ApiThrottleBurstLimit} \
-                    --context apiThrottleRateLimit=${ApiThrottleRateLimit} \
-                    --context errorAlarmThreshold=${ErrorAlarmThreshold} \
-                    --context durationAlarmThreshold=${DurationAlarmThreshold} \
-                    --context notificationEmail=${NOTIFICATION_EMAIL}
+                    --context apiThrottleRateLimit=${ApiThrottleRateLimit}
                 - cd $TRACKER_DIR
+                - STACK_NAME="MLEWTrackerStack-${Environment}"
+                - echo "Fetching stack outputs for asset deployment..."
+                - API_ENDPOINT=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue" --output text 2>/dev/null | tr -d '\r')
+                - API_KEY_ID=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='ApiKeyId'].OutputValue" --output text 2>/dev/null | tr -d '\r')
+                - |
+                  if [ "$API_KEY_ID" != "N/A" ] && [ ! -z "$API_KEY_ID" ]; then
+                    API_KEY_VALUE=$(aws apigateway get-api-key --api-key $API_KEY_ID --include-value --query 'value' --output text 2>/dev/null | tr -d '\r')
+                  else
+                    API_KEY_VALUE=""
+                  fi
+                - DASHBOARD_BUCKET=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='DashboardBucketName'].OutputValue" --output text 2>/dev/null | tr -d '\r')
+                - SDK_BUCKET=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='SdkBucketName'].OutputValue" --output text 2>/dev/null | tr -d '\r')
+                - DASHBOARD_URL=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='DashboardURL'].OutputValue" --output text 2>/dev/null | tr -d '\r')
+                - SDK_URL=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='SdkDistributionDomain'].OutputValue" --output text 2>/dev/null | tr -d '\r')
+                - DASHBOARD_DISTRIBUTION_ID=$(aws cloudformation describe-stack-resources --stack-name $STACK_NAME --query "StackResources[?ResourceType=='AWS::CloudFront::Distribution' && LogicalResourceId=='DashboardDistribution'].PhysicalResourceId" --output text 2>/dev/null | tr -d '\r')
+                - SDK_DISTRIBUTION_ID=$(aws cloudformation describe-stack-resources --stack-name $STACK_NAME --query "StackResources[?ResourceType=='AWS::CloudFront::Distribution' && LogicalResourceId=='SdkDistribution'].PhysicalResourceId" --output text 2>/dev/null | tr -d '\r')
+                - |
+                  cat <<EOF > packages/dashboard/.env.production
+                  VITE_API_ENDPOINT=${API_ENDPOINT}
+                  VITE_API_KEY=${API_KEY_VALUE}
+                  VITE_ENVIRONMENT=${Environment}
+                  VITE_AWS_REGION=${AWS_DEFAULT_REGION}
+                  EOF
+                - echo "Building dashboard package..."
+                - npm run build --workspace=packages/dashboard
+                - echo "Building tracker SDK package..."
+                - npm run build --workspace=packages/tracker-sdk
+                - |
+                  if [ -d "packages/dashboard/dist" ] && [ ! -z "$DASHBOARD_BUCKET" ] && [ "$DASHBOARD_BUCKET" != "None" ]; then
+                    echo "Uploading dashboard assets to s3://$DASHBOARD_BUCKET"
+                    aws s3 sync packages/dashboard/dist/ s3://$DASHBOARD_BUCKET/ --delete
+                    if [ ! -z "$DASHBOARD_DISTRIBUTION_ID" ] && [ "$DASHBOARD_DISTRIBUTION_ID" != "None" ]; then
+                      echo "Creating CloudFront invalidation for dashboard distribution $DASHBOARD_DISTRIBUTION_ID"
+                      aws cloudfront create-invalidation --distribution-id $DASHBOARD_DISTRIBUTION_ID --paths "/*"
+                    fi
+                  else
+                    echo "Warning: Dashboard dist folder or bucket name missing"
+                  fi
+                - |
+                  if [ -d "packages/tracker-sdk/dist" ] && [ ! -z "$SDK_BUCKET" ] && [ "$SDK_BUCKET" != "None" ]; then
+                    echo "Uploading tracker SDK assets to s3://$SDK_BUCKET"
+                    aws s3 sync packages/tracker-sdk/dist/ s3://$SDK_BUCKET/ --delete
+                    if [ ! -z "$SDK_DISTRIBUTION_ID" ] && [ "$SDK_DISTRIBUTION_ID" != "None" ]; then
+                      echo "Creating CloudFront invalidation for SDK distribution $SDK_DISTRIBUTION_ID"
+                      aws cloudfront create-invalidation --distribution-id $SDK_DISTRIBUTION_ID --paths "/*"
+                    fi
+                  else
+                    echo "Warning: Tracker SDK dist folder or bucket name missing"
+                  fi
+                - |
+                  cat <<EOF > deployment_env.sh
+                  STACK_NAME=$STACK_NAME
+                  API_ENDPOINT=$API_ENDPOINT
+                  API_KEY_ID=$API_KEY_ID
+                  API_KEY_VALUE=$API_KEY_VALUE
+                  DASHBOARD_BUCKET=$DASHBOARD_BUCKET
+                  DASHBOARD_URL=$DASHBOARD_URL
+                  SDK_BUCKET=$SDK_BUCKET
+                  SDK_URL=$SDK_URL
+                  EOF
             post_build:
               commands:
                 - |
                   echo "Post-build phase started..."
-                  STACK_NAME="MLEWTrackerStack-${Environment}"
-                  echo "Collecting stack outputs..."
-                  API_ENDPOINT=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue" --output text 2>/dev/null || echo "N/A")
-                  API_KEY_ID=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='ApiKeyId'].OutputValue" --output text 2>/dev/null || echo "N/A")
-                  DASHBOARD_URL=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='DashboardURL'].OutputValue" --output text 2>/dev/null || echo "N/A")
-                  SDK_URL=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='SdkDistributionDomain'].OutputValue" --output text 2>/dev/null || echo "N/A")
-                  if [ "$API_KEY_ID" != "N/A" ] && [ ! -z "$API_KEY_ID" ]; then
-                    echo "Getting API Key value..."
-                    API_KEY_VALUE=$(aws apigateway get-api-key --api-key $API_KEY_ID --include-value --query 'value' --output text 2>/dev/null || echo "N/A")
-                  else
-                    API_KEY_VALUE="N/A"
+                  TRACKER_DIR="${CODEBUILD_SRC_DIR}/aws-ml-enablement-workshop/yourwork/tracker"
+                  cd $TRACKER_DIR
+                  STACK_NAME_DEFAULT="MLEWTrackerStack-${Environment}"
+                  if [ -f deployment_env.sh ]; then
+                    . ./deployment_env.sh
                   fi
-                  if [ "$SDK_URL" != "N/A" ] && [ ! -z "$SDK_URL" ]; then
-                    FORMATTED_SDK_URL="https://${SDK_URL}"
-                  else
-                    FORMATTED_SDK_URL="N/A"
+                  STACK_NAME=${STACK_NAME:-$STACK_NAME_DEFAULT}
+                  API_ENDPOINT=${API_ENDPOINT:-$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue" --output text 2>/dev/null | tr -d '\r')}
+                  API_KEY_ID=${API_KEY_ID:-$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='ApiKeyId'].OutputValue" --output text 2>/dev/null | tr -d '\r')}
+                  if [ -z "$API_KEY_VALUE" ] && [ ! -z "$API_KEY_ID" ] && [ "$API_KEY_ID" != "N/A" ]; then
+                    API_KEY_VALUE=$(aws apigateway get-api-key --api-key $API_KEY_ID --include-value --query 'value' --output text 2>/dev/null | tr -d '\r')
+                  fi
+                  DASHBOARD_URL=${DASHBOARD_URL:-$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='DashboardURL'].OutputValue" --output text 2>/dev/null | tr -d '\r')}
+                  SDK_URL=${SDK_URL:-$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='SdkDistributionDomain'].OutputValue" --output text 2>/dev/null | tr -d '\r')}
+                  FORMATTED_SDK_URL="N/A"
+                  if [ ! -z "$SDK_URL" ] && [ "$SDK_URL" != "N/A" ]; then
+                    FORMATTED_SDK_URL="https://${SDK_URL}/tracker-sdk.js"
                   fi
                   cat > deployment-info.txt << EOFMSG
                   MLEW Tracker Deployment Completed Successfully!
                   ================================================
                   Deployment Time: $(date '+%Y-%m-%d %H:%M:%S')
-                  
+
                   Access Information:
                   ----------------------
                   API Endpoint: ${API_ENDPOINT}
                   API Key: ${API_KEY_VALUE}
                   Dashboard URL: https://${DASHBOARD_URL}
                   Tracker SDK URL: ${FORMATTED_SDK_URL}
-                  
+
                   Stack Details:
                   -----------------
                   Stack Name: ${STACK_NAME}
                   Region: ${AWS_DEFAULT_REGION}
-                  
+
                   Next Steps:
                   --------------
                   1. Save the API Key shown above - you'll need it to access the API
                   2. Access the Dashboard URL to view analytics
                   3. Configure your applications to send events to the API Endpoint using the API Key
-                  
+
                   For CloudWatch Logs:
                   https://console.aws.amazon.com/cloudwatch/home?region=${AWS_DEFAULT_REGION}#logsV2:log-groups
-                  
+
                   For CloudFormation Stack:
                   https://console.aws.amazon.com/cloudformation/home?region=${AWS_DEFAULT_REGION}#/stacks/stackinfo?stackId=${STACK_NAME}
                   EOFMSG

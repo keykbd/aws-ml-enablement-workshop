@@ -1,6 +1,5 @@
 import * as path from 'path';
-import * as fs from 'fs';
-import { Duration, RemovalPolicy, Stack, StackProps, Tags, CfnOutput, Annotations } from 'aws-cdk-lib';
+import { Duration, RemovalPolicy, Stack, StackProps, Tags, CfnOutput } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as s3 from 'aws-cdk-lib/aws-s3';
@@ -11,28 +10,21 @@ import * as lambdaNodejs from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
-import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
-import * as cw from 'aws-cdk-lib/aws-cloudwatch';
-import * as cwActions from 'aws-cdk-lib/aws-cloudwatch-actions';
-import * as sns from 'aws-cdk-lib/aws-sns';
-import * as snsSubs from 'aws-cdk-lib/aws-sns-subscriptions';
 
 export interface TrackerStackProps extends StackProps {
   environmentName: string;
   eventTtlDays: number;
   apiThrottleBurstLimit: number;
   apiThrottleRateLimit: number;
-  errorAlarmThreshold: number;
-  durationAlarmThreshold: number;
-  notificationEmail?: string;
 }
 
 export class TrackerStack extends Stack {
   constructor(scope: Construct, id: string, props: TrackerStackProps) {
     super(scope, id, props);
-
-    const isProduction = props.environmentName.toLowerCase() === 'prod';
     const accountId = Stack.of(this).account;
+
+    const isProd = props.environmentName === 'prod';
+    const persistentResourcePolicy = isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY;
 
     const tagResource = (resource: Construct, component: string) => {
       Tags.of(resource).add('Environment', props.environmentName);
@@ -50,9 +42,9 @@ export class TrackerStack extends Stack {
       sortKey: { name: 'timestampEventId', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       timeToLiveAttribute: 'ttl',
-      pointInTimeRecovery: true,
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
       stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
-      removalPolicy: RemovalPolicy.RETAIN,
+      removalPolicy: persistentResourcePolicy,
     });
     eventsTable.addGlobalSecondaryIndex({
       indexName: 'UserIndex',
@@ -73,7 +65,7 @@ export class TrackerStack extends Stack {
       partitionKey: { name: 'applicationIdPeriod', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'timestamp', type: dynamodb.AttributeType.NUMBER },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: RemovalPolicy.RETAIN,
+      removalPolicy: persistentResourcePolicy,
     });
     tagResource(aggregationsTable, 'Database');
 
@@ -81,14 +73,15 @@ export class TrackerStack extends Stack {
       tableName: `mlew-applications-${props.environmentName}`,
       partitionKey: { name: 'applicationId', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: RemovalPolicy.RETAIN,
+      removalPolicy: persistentResourcePolicy,
     });
     tagResource(applicationsTable, 'Database');
 
     // S3 Buckets
     const dashboardBucket = new s3.Bucket(this, 'DashboardBucket', {
       bucketName: `mlew-dashboard-${accountId}`,
-      versioned: true,
+      versioned: isProd,
+      autoDeleteObjects: !isProd,
       encryption: s3.BucketEncryption.S3_MANAGED,
       blockPublicAccess: new s3.BlockPublicAccess({
         blockPublicAcls: false,
@@ -99,7 +92,7 @@ export class TrackerStack extends Stack {
       publicReadAccess: true,
       websiteIndexDocument: 'index.html',
       websiteErrorDocument: 'error.html',
-      removalPolicy: RemovalPolicy.RETAIN,
+      removalPolicy: persistentResourcePolicy,
     });
     dashboardBucket.addCorsRule({
       allowedHeaders: ['*'],
@@ -111,7 +104,8 @@ export class TrackerStack extends Stack {
 
     const sdkBucket = new s3.Bucket(this, 'SdkBucket', {
       bucketName: `mlew-sdk-${accountId}`,
-      versioned: true,
+      versioned: isProd,
+      autoDeleteObjects: !isProd,
       encryption: s3.BucketEncryption.S3_MANAGED,
       blockPublicAccess: new s3.BlockPublicAccess({
         blockPublicAcls: false,
@@ -120,7 +114,7 @@ export class TrackerStack extends Stack {
         restrictPublicBuckets: false,
       }),
       publicReadAccess: true,
-      removalPolicy: RemovalPolicy.RETAIN,
+      removalPolicy: persistentResourcePolicy,
     });
     sdkBucket.addCorsRule({
       allowedHeaders: ['*'],
@@ -130,23 +124,6 @@ export class TrackerStack extends Stack {
     });
     tagResource(sdkBucket, 'Storage');
 
-    const archiveBucket = new s3.Bucket(this, 'ArchiveBucket', {
-      bucketName: `mlew-archive-${accountId}`,
-      versioned: true,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      removalPolicy: RemovalPolicy.RETAIN,
-    });
-    archiveBucket.addLifecycleRule({
-      id: 'archive-lifecycle',
-      enabled: true,
-      transitions: [
-        {
-          storageClass: s3.StorageClass.GLACIER,
-          transitionAfter: Duration.days(90),
-        },
-      ],
-    });
-    tagResource(archiveBucket, 'Storage');
 
     // CloudFront Distributions
     const dashboardDistribution = new cloudfront.Distribution(this, 'DashboardDistribution', {
@@ -181,17 +158,6 @@ export class TrackerStack extends Stack {
     tagResource(dashboardDistribution, 'Delivery');
     tagResource(sdkDistribution, 'Delivery');
 
-    // SNS topic for alarms (production only)
-    let alarmTopic: sns.Topic | undefined;
-    if (isProduction && props.notificationEmail) {
-      alarmTopic = new sns.Topic(this, 'AlarmTopic', {
-        topicName: `mleww3-alarms-${props.environmentName}`,
-        displayName: 'MLEWW3 Tracker Alarms',
-      });
-      alarmTopic.addSubscription(new snsSubs.EmailSubscription(props.notificationEmail));
-      tagResource(alarmTopic, 'Monitoring');
-    }
-
     // Lambda functions
     const bundling: lambdaNodejs.BundlingOptions = {
       externalModules: ['aws-sdk'],
@@ -213,7 +179,6 @@ export class TrackerStack extends Stack {
         ENVIRONMENT: props.environmentName,
         EVENTS_TABLE: eventsTable.tableName,
         APPLICATIONS_TABLE: applicationsTable.tableName,
-        ARCHIVE_BUCKET: archiveBucket.bucketName,
         EVENT_TTL_DAYS: props.eventTtlDays.toString(),
       },
     });
@@ -270,15 +235,6 @@ export class TrackerStack extends Stack {
     applicationsTable.grantReadWriteData(eventIngestionFunction);
     applicationsTable.grantReadData(queryFunction);
 
-    archiveBucket.grantWrite(eventIngestionFunction);
-
-    eventIngestionFunction.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['cloudwatch:PutMetricData'],
-        resources: ['*'],
-      })
-    );
-
     // DynamoDB stream event source for aggregation
     streamAggregationFunction.addEventSource(
       new lambdaEventSources.DynamoEventSource(eventsTable, {
@@ -295,6 +251,11 @@ export class TrackerStack extends Stack {
       description: 'MLEWW3 Tracker Analytics API',
       deployOptions: {
         stageName: props.environmentName,
+      },
+      defaultCorsPreflightOptions: {
+        allowOrigins: apigw.Cors.ALL_ORIGINS,
+        allowHeaders: ['Content-Type', 'X-Api-Key'],
+        allowMethods: ['GET', 'OPTIONS'],
       },
       endpointConfiguration: {
         types: [apigw.EndpointType.REGIONAL],
@@ -318,7 +279,6 @@ export class TrackerStack extends Stack {
     });
 
     eventsResource.addMethod('POST', eventIngestionIntegration, { apiKeyRequired: true });
-    eventsResource.addMethod('OPTIONS', eventIngestionIntegration, { apiKeyRequired: false });
 
     applicationsResource.addMethod('GET', queryIntegration, { apiKeyRequired: true });
     summaryResource.addMethod('GET', queryIntegration, { apiKeyRequired: true });
@@ -347,153 +307,12 @@ export class TrackerStack extends Stack {
       stage: restApi.deploymentStage,
     });
 
-    // CloudWatch Dashboard & Alarms
-    const apiCountMetric = new cw.Metric({
-      namespace: 'AWS/ApiGateway',
-      metricName: 'Count',
-      statistic: 'Sum',
-      period: Duration.minutes(5),
-      dimensionsMap: { ApiName: restApi.restApiName },
-    });
-    const api4xxMetric = new cw.Metric({
-      namespace: 'AWS/ApiGateway',
-      metricName: '4XXError',
-      statistic: 'Sum',
-      period: Duration.minutes(5),
-      dimensionsMap: { ApiName: restApi.restApiName },
-    });
-    const api5xxMetric = new cw.Metric({
-      namespace: 'AWS/ApiGateway',
-      metricName: '5XXError',
-      statistic: 'Sum',
-      period: Duration.minutes(5),
-      dimensionsMap: { ApiName: restApi.restApiName },
-    });
-
-    const lambdaInvocationMetric = eventIngestionFunction.metricInvocations({
-      period: Duration.minutes(5),
-      statistic: 'Sum',
-    });
-    const lambdaErrorMetric = eventIngestionFunction.metricErrors({
-      period: Duration.minutes(5),
-      statistic: 'Sum',
-    });
-    const lambdaDurationMetric = eventIngestionFunction.metricDuration({
-      period: Duration.minutes(5),
-      statistic: 'Average',
-    });
-
-    const dynamoReadCapacityMetric = new cw.Metric({
-      namespace: 'AWS/DynamoDB',
-      metricName: 'ConsumedReadCapacityUnits',
-      statistic: 'Sum',
-      period: Duration.minutes(5),
-      dimensionsMap: { TableName: eventsTable.tableName },
-    });
-    const dynamoWriteCapacityMetric = new cw.Metric({
-      namespace: 'AWS/DynamoDB',
-      metricName: 'ConsumedWriteCapacityUnits',
-      statistic: 'Sum',
-      period: Duration.minutes(5),
-      dimensionsMap: { TableName: eventsTable.tableName },
-    });
-    const dynamoSystemErrorsMetric = new cw.Metric({
-      namespace: 'AWS/DynamoDB',
-      metricName: 'SystemErrors',
-      statistic: 'Sum',
-      period: Duration.minutes(5),
-      dimensionsMap: { TableName: eventsTable.tableName },
-    });
-
-    new cw.Dashboard(this, 'MonitoringDashboard', {
-      dashboardName: `MLEWTracker-${props.environmentName}`,
-      widgets: [
-        [
-          new cw.GraphWidget({
-            title: 'API Gateway Metrics',
-            left: [apiCountMetric],
-            right: [api4xxMetric, api5xxMetric],
-          }),
-        ],
-        [
-          new cw.GraphWidget({
-            title: 'Lambda Functions',
-            left: [lambdaInvocationMetric, lambdaErrorMetric],
-            right: [lambdaDurationMetric],
-          }),
-        ],
-        [
-          new cw.GraphWidget({
-            title: 'DynamoDB Tables',
-            left: [dynamoReadCapacityMetric, dynamoWriteCapacityMetric],
-            right: [dynamoSystemErrorsMetric],
-          }),
-        ],
-      ],
-    });
-
-    const highErrorRateAlarm = new cw.Alarm(this, 'HighErrorRateAlarm', {
-      alarmName: `MLEWW3-HighErrorRate-${props.environmentName}`,
-      alarmDescription: `High error rate detected in ${props.environmentName} environment`,
-      metric: api5xxMetric,
-      threshold: props.errorAlarmThreshold,
-      evaluationPeriods: 2,
-      comparisonOperator: cw.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cw.TreatMissingData.NOT_BREACHING,
-    });
-
-    const highDurationAlarm = new cw.Alarm(this, 'HighDurationAlarm', {
-      alarmName: `MLEWW3-HighDuration-${props.environmentName}`,
-      alarmDescription: `High average duration detected in ${props.environmentName} environment`,
-      metric: lambdaDurationMetric,
-      threshold: props.durationAlarmThreshold,
-      evaluationPeriods: 3,
-      comparisonOperator: cw.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cw.TreatMissingData.NOT_BREACHING,
-    });
-
-    if (alarmTopic) {
-      const alarmAction = new cwActions.SnsAction(alarmTopic);
-      highErrorRateAlarm.addAlarmAction(alarmAction);
-      highDurationAlarm.addAlarmAction(alarmAction);
-    }
-
-    // Dashboard & SDK deployments (if assets exist)
-    const dashboardDistPath = path.join(__dirname, '..', '..', 'packages', 'dashboard', 'dist');
-    if (fs.existsSync(dashboardDistPath)) {
-      new s3deploy.BucketDeployment(this, 'DashboardDeployment', {
-        sources: [s3deploy.Source.asset(dashboardDistPath)],
-        destinationBucket: dashboardBucket,
-        distribution: dashboardDistribution,
-        distributionPaths: ['/*'],
-        prune: true,
-      });
-    } else {
-      // Provide a synth-time warning to remind build step.
-      Annotations.of(this).addWarning(
-        'Dashboard dist not found. Run `npm run build --workspace=packages/dashboard` before cdk deploy.'
-      );
-    }
-
-    const sdkDistPath = path.join(__dirname, '..', '..', 'packages', 'tracker-sdk', 'dist');
-    if (fs.existsSync(sdkDistPath)) {
-      new s3deploy.BucketDeployment(this, 'SdkDeployment', {
-        sources: [s3deploy.Source.asset(sdkDistPath)],
-        destinationBucket: sdkBucket,
-        distribution: sdkDistribution,
-        distributionPaths: ['/*'],
-        prune: true,
-      });
-    } else {
-      Annotations.of(this).addWarning(
-        'Tracker SDK dist not found. Run `npm run build --workspace=packages/tracker-sdk` before cdk deploy.'
-      );
-    }
-
     // Outputs
+    const apiBaseUrl = restApi.url.endsWith('/') ? restApi.url.slice(0, -1) : restApi.url;
+
     new CfnOutput(this, 'ApiEndpoint', {
-      description: 'Analytics API Endpoint',
-      value: `${restApi.url}v1/`,
+      description: 'Analytics API Base URL',
+      value: apiBaseUrl,
       exportName: `${Stack.of(this).stackName}-ApiEndpoint`,
     });
 
@@ -533,10 +352,5 @@ export class TrackerStack extends Stack {
       exportName: `${Stack.of(this).stackName}-EventsTable`,
     });
 
-    new CfnOutput(this, 'ArchiveBucketName', {
-      description: 'Archive S3 Bucket Name',
-      value: archiveBucket.bucketName,
-      exportName: `${Stack.of(this).stackName}-ArchiveBucket`,
-    });
   }
 }

@@ -36,21 +36,6 @@ const trackerProps: TrackerStackProps = {
       (app.node.tryGetContext('apiThrottleRateLimit') as string | undefined),
     10000
   ),
-  errorAlarmThreshold: parseNumber(
-    process.env.ErrorAlarmThreshold ??
-      (app.node.tryGetContext('errorAlarmThreshold') as string | undefined),
-    100
-  ),
-  durationAlarmThreshold: parseNumber(
-    process.env.DurationAlarmThreshold ??
-      (app.node.tryGetContext('durationAlarmThreshold') as string | undefined),
-    10000
-  ),
-  notificationEmail:
-    process.env.NOTIFICATION_EMAIL ??
-    process.env.NotificationEmail ??
-    process.env.NotificationEmailAddress ??
-    (app.node.tryGetContext('notificationEmail') as string | undefined),
 };
 
 new TrackerStack(app, `MLEWTrackerStack-${environmentName}`, trackerProps);
